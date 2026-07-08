@@ -34,20 +34,29 @@ CATEGORY_ALIASES: dict[str, str] = {
 HEADER_ALIASES: dict[str, list[str]] = {
     "title": ["title", "song title", "song", "name"],
     "artist": ["artist", "artists", "performer"],
-    "category": ["category", "cat", "rotation"],
+    "category": ["category", "cat", "rotation", "wideorbit category",
+                 "wideorbit cateogry"],
     "tempo": ["tempo", "tempo code", "energy"],
-    "sound": ["sound", "sound code", "style"],
+    "sound": ["sound", "sound code", "style", "sound coding"],
     "mood": ["mood", "mood code", "feel"],
     "year": ["year", "release year", "era", "yr"],
     "artist_tier": ["artist tier", "tier", "artist type", "core/secondary",
                     "artist level"],
     "length": ["length", "runtime", "duration", "time"],
-    "song_id": ["id", "song id", "cart", "cart number", "cut", "media id"],
+    "song_id": ["id", "song id", "cart", "cart number", "cut", "media id",
+                "wide orbit cart", "wideorbit cart", "cart #"],
+}
+
+# When no year column exists, use a category-based era default.
+_CAT_ERA: dict[str, int] = {
+    "PC": 2025, "PR": 2023, "PT": 2015, "ST": 2015,
+    "P2K": 2004, "S2K": 2004, "P90": 1995, "S90": 1995,
+    "TB": 1988, "AF": 2010,
 }
 
 
 def _canonical_header(raw: str) -> str | None:
-    cleaned = re.sub(r"[^a-z0-9/ ]", "", (raw or "").strip().lower())
+    cleaned = re.sub(r"[^a-z0-9/ ]", "", (raw or "").strip().lower()).strip()
     for field_name, candidates in HEADER_ALIASES.items():
         if cleaned in candidates:
             return field_name
@@ -59,8 +68,12 @@ def normalize_category(raw: str) -> str | None:
 
 
 def _parse_length(raw) -> int:
+    import datetime
     if raw is None or raw == "":
         return 210
+    # openpyxl returns song length as datetime.time(minutes, seconds)
+    if isinstance(raw, datetime.time):
+        return raw.hour * 60 + raw.minute or 210
     text = str(raw).strip()
     if ":" in text:
         parts = [int(float(p)) for p in text.split(":")]
@@ -72,6 +85,21 @@ def _parse_length(raw) -> int:
         return int(float(text)) or 210
     except ValueError:
         return 210
+
+
+def _parse_tempo(raw) -> int:
+    """Decode a 1–5 scale or WideOrbit 3-digit code (111/333/555)."""
+    if raw is None:
+        return 3
+    try:
+        v = int(float(raw))
+        s = str(v)
+        if len(s) == 3 and all(c in "135" for c in s):
+            avg = sum(int(c) for c in s) / 3
+            return max(1, min(5, round(avg)))
+        return max(1, min(5, v))
+    except (ValueError, TypeError):
+        return 3
 
 
 def _rows_from_xlsx(path: Path) -> list[list]:
@@ -127,24 +155,33 @@ def load_library(path: str | Path) -> list[Song]:
         if category is None:
             skipped += 1
             continue
+        tempo = _parse_tempo(cell(row, "tempo", None))
+        raw_year = cell(row, "year", None)
         try:
-            tempo = int(float(cell(row, "tempo", 3)))
+            year = int(float(raw_year)) if raw_year not in (None, "") else None
         except (ValueError, TypeError):
-            tempo = 3
-        try:
-            year = int(float(cell(row, "year", 2015)))
-        except (ValueError, TypeError):
-            year = 2015
+            year = None
+        if year is None:
+            year = _CAT_ERA.get(category, 2010)
+
+        raw_tier = cell(row, "artist_tier", None)
+        if raw_tier not in (None, ""):
+            artist_tier = ArtistTier.parse(str(raw_tier))
+        else:
+            # Infer tier from rotation category when not in the spreadsheet
+            artist_tier = (ArtistTier.CORE if category in ("PC", "PR")
+                           else ArtistTier.SECONDARY)
+
         songs.append(Song(
             song_id=str(cell(row, "song_id", f"S{n:04d}")).strip() or f"S{n:04d}",
             title=title,
             artist=artist,
             category=category,
-            tempo=max(1, min(5, tempo)),
+            tempo=tempo,
             sound=Sound.parse(str(cell(row, "sound"))),
             mood=Mood.parse(str(cell(row, "mood"))),
             year=year,
-            artist_tier=ArtistTier.parse(str(cell(row, "artist_tier"))),
+            artist_tier=artist_tier,
             length_seconds=_parse_length(cell(row, "length")),
         ))
     if not songs:
