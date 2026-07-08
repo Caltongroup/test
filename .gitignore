@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+logs/
+state/
+data/clock.json
+# Station data stays on the studio share — don't commit it
+data/*.xlsx
+data/samples/*.LOG
+data/samples/*.log
